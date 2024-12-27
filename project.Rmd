@@ -1,0 +1,567 @@
+---
+title: "Final Project: Decoding Diabetes – Analyzing Key Health Indicators"
+author: "Jothish Kumar Polaki"
+date: "2024-12-13"
+output: html_document
+runtime: shiny
+---
+
+
+## Setup
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r importing and loading libraries, warning=FALSE, message=FALSE}
+if(!require(pacman)) #<1>
+  install.packages("pacman")
+
+pacman::p_load(tidyverse,
+               ggplot2,
+               readr,
+               dplyr,
+               reshape2,
+               caret,
+               pROC,
+               randomForest,
+               glmnet,
+               shiny
+               )
+
+```
+
+```{r loading data, warning=FALSE, message=FALSE}
+data <- read_csv("diabetes_binary_5050split_health_indicators_BRFSS2015.csv")
+
+# checking top rows
+head(data)
+
+# checking for NA's in data
+colSums(is.na(data))
+
+```
+
+## EDA Pre-processing
+
+-   Changing the values in the selected columns for better understanding.
+```{r preprocessing, warning=FALSE, message=FALSE}
+# getting required data for analysis
+eda_data <- data |>
+  select(
+    Diabetes_binary, AnyHealthcare, NoDocbcCost, HighBP, HighChol, 
+    Income, Education, Age, Sex, BMI
+  ) |>
+  mutate(
+    # changing binary values to "No" and "Yes"
+    AnyHealthcare = ifelse(AnyHealthcare == 1, "Yes", "No"),
+    NoDocbcCost = ifelse(NoDocbcCost == 1, "Yes", "No"),
+    HighBP = ifelse(HighBP == 1, "Yes", "No"),
+    HighChol = ifelse(HighChol == 1, "Yes", "No"),
+    
+    # updating the income values to meaning labels
+    Income = case_when(
+      Income == 1 ~ "Less than $10,000",
+      Income == 2 ~ "Less than $15,000",
+      Income == 3 ~ "Less than $20,000",
+      Income == 4 ~ "Less than $25,000",
+      Income == 5 ~ "Less than $35,000",
+      Income == 6 ~ "Less than $50,000",
+      Income == 7 ~ "Less than $75,000",
+      Income == 8 ~ "$75,000 or more",
+      TRUE ~ as.character(Income)  # Keep original value if outside 1-8
+    ),
+    # updating education levels
+    Education = case_when(
+      Education == 1 ~ "Never attended school or only kindergarten",
+      Education == 2 ~ "Grades 1 through 8 (Elementary)",
+      Education == 3 ~ "Grades 9 through 11 (Some high school)",
+      Education == 4 ~ "Grade 12 or GED (High school graduate)",
+      Education == 5 ~ "College 1 year to 3 years (Some college or technical school)",
+      Education == 6 ~ "College 4 years or more (College graduate)",
+      TRUE ~ as.character(Education)  # Keep original value if outside 1-6
+    ),
+    # updating the age column
+    Age = case_when(
+      Age == 1 ~ "18-24",
+      Age == 2 ~ "25-29",
+      Age == 3 ~ "30-34",
+      Age == 4 ~ "35-39",
+      Age == 5 ~ "40-44",
+      Age == 6 ~ "45-49",
+      Age == 7 ~ "50-54",
+      Age == 8 ~ "55-59",
+      Age == 9 ~ "60-64",
+      Age == 10 ~ "65-69",
+      Age == 11 ~ "70-74",
+      Age == 12 ~ "75-79",
+      Age == 13 ~ "80 or older",
+      TRUE ~ as.character(Age)  # Keep original value if outside 1-13
+    )
+  )
+
+#view(eda_data)
+```
+
+
+## Exploratory Data Analysis
+
+### Question 1:
+
+-   What is the relationship between socioeconomic factors like Income, Education and Healthcare access and the prevalance of prediabetes or diabetes?
+
+Education Distributed by Diabetes Status:
+
+```{r education, warning=FALSE, message=FALSE}
+education_data <- eda_data |>
+  select(Education, Diabetes_binary)
+
+education_data <- education_data %>%
+  mutate(EducationNumeric = case_when(
+    Education == "Never attended school or only kindergarten" ~ 1,
+    Education == "Grades 1 through 8 (Elementary)" ~ 2,
+    Education == "Grades 9 through 11 (Some high school)" ~ 3,
+    Education == "Grade 12 or GED (High school graduate)" ~ 4,
+    Education == "College 1 year to 3 years (Some college or technical school)" ~ 5,
+    Education == "College 4 years or more (College graduate)" ~ 6
+  ))
+
+# education vs diabete plot
+education_data |>
+  ggplot(aes(x = EducationNumeric, fill = as.factor(Diabetes_binary))) +
+  geom_histogram(position = "dodge", binwidth = 0.5, color = "black") +
+  scale_fill_manual(values = c("0" = "red", "1" = "blue"),
+                    name = "Diabetes Status",
+                    labels = c("No Diabetes", "Yes Diabetes")) +
+  scale_x_continuous(breaks = 1:6, labels = c(
+    "Never attended or Kindergarten",
+    "Grades 1-8 (Elementary)",
+    "Grades 9-11 (Some HS)",
+    "Grade 12 or GED (HS Graduate)",
+    "College 1-3 years",
+    "College 4+ years"
+  )) +
+  labs(
+    x = "Education levels",
+    y = "Count",
+    title = "Distribution of Education Levels by Diabetes Status"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 7), legend.position = "top")
+```
+
+Income Distribution by Diabetes status:
+
+```{r income, warning=FALSE, message=FALSE}
+income_data <- eda_data |>
+  select(Income, Diabetes_binary)
+
+income_data <- income_data |>
+  mutate(
+    incomeNumeric = case_when(
+      Income == "$75,000 or more" ~ 8,
+      Income == "Less than $75,000" ~ 7,
+      Income == "Less than $50,000" ~ 6,
+      Income == "Less than $35,000" ~ 5,
+      Income == "Less than $25,000" ~ 4,
+      Income == "Less than $20,000" ~ 3,
+      Income == "Less than $15,000" ~ 2,
+      Income == "Less than $10,000" ~ 1,
+      TRUE ~ NA_real_
+  )
+)
+
+# income vs diabetes plot
+income_data |>
+  ggplot(aes(x = incomeNumeric, fill = factor(Diabetes_binary))) +
+  scale_fill_manual(values = c("0" = "red", "1" = "blue"),
+                    name = "Diabetes Status",
+                    labels = c("No Diabetes", "Yes Diabetes")) +
+  geom_histogram(position = "dodge", binwidth = 0.5, color = "black") +
+  scale_x_continuous(breaks = 1:8, labels = c(
+    "Less than $10,000",
+    "Less than $15,000",                                      "Less than $20,000",                                      "Less than $25,000",                                      "Less than $35,000",                                      "Less than $50,000",                                      "Less than $75,000",                                      "$75,000 or more"
+  )) +
+  labs(
+    x = "Income Levels",
+    y = "Count",
+    fill = "Diabetes Status",
+    title = "Income Distribution by Diabetes Status"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "top")
+```
+
+Healthcare Access:
+
+```{r healthcare, warning=FALSE, message=FALSE}
+# any healthcare coverage
+eda_data |>
+  ggplot(aes(x = factor(AnyHealthcare), fill = factor(Diabetes_binary))) +
+  geom_bar(position = "fill") +
+  scale_fill_manual(values = c("0" = "red", "1" = "blue"),
+                    name = "Diabetes Status",
+                    labels = c("No Diabetes", "Yes Diabetes")) +
+  labs(
+    x = "Has any healthcare coverage",
+    y = "Proportion",
+    fill = "Diabetes status",
+    title = "Distribution of Healthcare Access by diabetes status"
+  ) +
+  theme_minimal()
+
+# Unable to see a doctor due to financial issues
+eda_data |>
+  ggplot(aes(x = factor(NoDocbcCost), fill = factor(Diabetes_binary))) +
+  geom_bar(position = "fill") +
+  scale_fill_manual(values = c("0" = "red", "1" = "blue"),
+                    name = "Diabetes Status",
+                    labels = c("No Diabetes", "Yes Diabetes")) +
+  labs(
+    x = "Could not see a doctor due to financial constraints",
+    y = "Proportion",
+    fill = "Diabetes status",
+    title = "Financial barrier to Healthcare Access by diabetes status"
+  ) +
+  theme_minimal()
+
+```
+
+### Question 2:
+
+-   How do comorbid conditions like high blood pressure, high cholesterol and heart diseases relate to the risk of prediabetes or diabetes?
+
+Distribution of high BP and cholesterol by Diabetes status
+
+```{r comorbid, warning=FALSE, message=FALSE}
+# proportion of high BP by diabetes status
+eda_data |>
+  ggplot(aes(x = factor(HighBP), fill = factor(Diabetes_binary))) +
+  geom_bar(position = "fill") +
+  scale_fill_manual(values = c("0" = "red", "1" = "blue"),
+                    name = "Diabetes Status",
+                    labels = c("No Diabetes", "Yes Diabetes")) +
+  labs(
+    x = "High Blood Pressure",
+    y = "Proportion",
+    fill = "Diabetes status",
+    title = "Prevelance of High BP by diabetes status"
+  ) +
+  theme_minimal()
+
+# proportion of high cholesterol by diabetes status
+eda_data |>
+  ggplot(aes(x = factor(HighChol), fill = factor(Diabetes_binary))) +
+  geom_bar(position = "fill") +
+  scale_fill_manual(values = c("0" = "red", "1" = "blue"),
+                    name = "Diabetes Status",
+                    labels = c("No Diabetes", "Yes Diabetes")) +
+  labs(
+    x = "High Cholesterol",
+    y = "Proportion",
+    fill = "Diabetes status",
+    title = "Prevelance of High Cholesterol by diabetes status"
+  ) +
+  theme_minimal()
+
+```
+
+Heatmap to visualize comorbidites:
+
+```{r heatmap, warning=FALSE, message=FALSE}
+comorbidity_data <- data |>
+  select(Diabetes_binary, HighBP, HighChol, Stroke, HeartDiseaseorAttack) |>
+  group_by(Diabetes_binary) |>
+  summarise_all(mean)
+
+melted_data <- melt(comorbidity_data, id.vars = "Diabetes_binary")
+
+# heatmap of comorbid conditions vs diabetes
+melted_data |>
+  ggplot(aes(x = variable, y = factor(Diabetes_binary), fill = value)) +
+  geom_tile() +
+  labs(
+    x = "Comorbidites",
+    y = "Diabetes Status",
+    fill = "Proportion",
+    title = "Heatmap of Comorbidites by Diabetes status"
+  ) +
+  scale_y_discrete(labels = c("0" = "No", "1" = "Yes")) +
+  scale_fill_gradient(low = "lightblue", high = "darkblue") +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 12))
+
+```
+
+Analyzing confounders like **Age**, **Sex** and **BMI**:
+
+```{r confounder, warning=FALSE, message=FALSE}
+confounder_data <- eda_data |>
+  mutate(BMI_Category = cut(BMI, breaks = c(0, 18.5, 25, 30, Inf), 
+                            labels = c("Underweight", "Normal", "Overweight", "Obese")),
+         Sex = factor(Sex, levels = c(0, 1), labels = c("Male", "Female")),
+         Diabetes_binary = factor(Diabetes_binary, levels = c(0, 1), labels = c("No Diabetes", "Diabetes")))
+
+# Faceted bar plot
+confounder_data |>
+  ggplot(aes(x = factor(Age), fill = BMI_Category)) +
+  geom_bar(position = "fill") +
+  facet_wrap(Sex ~ Diabetes_binary) +
+  labs(x = "Age", y = "Proportion", fill = "BMI Category") +
+  ggtitle("Age, Sex, and BMI Distribution by Diabetes Status") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "top")
+```
+
+## Machine learning model
+
+### Logistic Regression
+
+```{r ml pre processing, warning=FALSE, message=FALSE}
+# selecting predictors and the outcome
+ml_data <- eda_data |>
+  select(Diabetes_binary, AnyHealthcare, NoDocbcCost, Income, Education, HighBP, HighChol, BMI, Age, Sex)
+
+# converting categorical variables to factors
+ml_data <- ml_data |>
+  mutate(
+    Diabetes_binary = as.factor(Diabetes_binary),
+    AnyHealthcare = as.factor(AnyHealthcare),
+    NoDocbcCost = as.factor(NoDocbcCost),
+    Income = as.factor(Income),
+    Education = as.factor(Education),
+    HighBP = as.factor(HighBP),
+    HighChol = as.factor(HighChol),
+    Age = as.factor(Age),
+    Sex = as.factor(Sex)
+  )
+
+# splitting the data to train and test set
+set.seed(123)
+train_index <- createDataPartition(ml_data$Diabetes_binary, p = 0.8, list = FALSE)
+train_data <- ml_data[train_index, ]
+test_data <- ml_data[-train_index, ]
+
+dim(train_data)
+dim(test_data)
+```
+
+
+```{r lopmodel, warning=FALSE, message=FALSE}
+# creating a log reg model
+log_model <- glm(Diabetes_binary ~ ., data = train_data, family = binomial)
+
+#summary(log_model)
+
+# predicting probabilities
+test_predictions <- predict(log_model, test_data, type = "response")
+# converting probablities into binary
+test_data$predicted <- ifelse(test_predictions > 0.5, "1", "0")
+
+# generating a confusion matrix
+conf_matrix <- confusionMatrix(as.factor(test_data$predicted), test_data$Diabetes_binary, positive = "1")
+
+print(conf_matrix)
+
+```
+
+
+```{r roc, warning=FALSE, message=FALSE}
+# plotting a roc curve
+roc_curve <- roc(test_data$Diabetes_binary, as.numeric(test_predictions))
+
+plot(roc_curve, col = "blue", main = "ROC Curve for Logistic Regression")
+```
+
+### Random Forest
+
+```{r rf, warning=FALSE, message=FALSE}
+
+set.seed(123)
+# creating a random forest model
+rf_model <- randomForest(
+  Diabetes_binary ~ ., 
+  data = train_data, 
+  ntree = 500, 
+  mtry = 3, 
+  importance = TRUE
+)
+
+print(rf_model)
+
+# getting predictions
+rf_predictions <- predict(rf_model, test_data)
+
+# making a confusion matrix from the model
+conf_matrix_rf <- confusionMatrix(rf_predictions, test_data$Diabetes_binary, positive = "1")
+print(conf_matrix_rf)
+
+# plotting a feature importance plot
+varImpPlot(rf_model, main = "Feature Importance")
+
+```
+
+## Shiny App
+
+### UI
+
+```{r ui, warning=FALSE, message=FALSE}
+# creating an UI for the app
+ui <- fluidPage(
+  titlePanel("Diabetes Risk Explorer"),
+  sidebarLayout(
+    sidebarPanel(
+      selectInput("eda_var", "Select Variable for EDA:", 
+                  choices = c("Education", "Income", "Age", "Sex", "BMI", "Income", "HighBP", "HighChol"), selected = "BMI"),
+      selectInput("eda_view", "Choose EDA View:", 
+                  choices = c("Distribution", "Heatmap", "Proportions"), selected = "Distribution"),
+      numericInput("input_age", "Enter Age:", value = 40, min = 18, max = 100),
+      numericInput("input_bmi", "Enter BMI:", value = 25, min = 10, max = 50),
+      checkboxInput("input_highbp", "Has High Blood Pressure?", value = FALSE),
+      checkboxInput("input_highchol", "Has High Cholesterol?", value = FALSE),
+      selectInput("input_healthcare", "Do you have healthcare coverage?", 
+                  choices = c("Yes", "No")),
+      selectInput("input_nodoc", "Could not see a doctor due to cost?", 
+                  choices = c("Yes", "No")),
+      selectInput("input_income", "Select Income level:", 
+                  choices = c("Less than $10,000", "Less than $15,000", 
+                              "Less than $20,000", "Less than $25,000", 
+                              "Less than $35,000", "Less than $50,000", 
+                              "Less than $75,000", "$75,000 or more")),
+      selectInput("input_education", "Select Education level:", 
+                  choices = c("Never attended school or only kindergarten", 
+                              "Grades 1 through 8 (Elementary)", 
+                              "Grades 9 through 11 (Some high school)", 
+                              "Grade 12 or GED (High school graduate)", 
+                              "College 1 year to 3 years (Some college or technical school)", 
+                              "College 4 years or more (College graduate)")),
+      radioButtons(
+  inputId = "input_sex",
+  label = "Select Sex:",
+  choices = c("Male", "Female"),
+  selected = NULL
+),
+      actionButton("predict", "Predict Diabetes Risk")
+    ),
+    mainPanel(
+      tabsetPanel(
+        tabPanel("EDA", plotOutput("eda_plot")),
+        tabPanel("Prediction", verbatimTextOutput("pred_output")),
+        tabPanel("Feature Importance", plotOutput("feature_plot")),
+        tabPanel("Data Summary", verbatimTextOutput("data_summary"))
+      )
+    )
+  )
+)
+
+```
+
+### Server
+
+```{r server, warning=FALSE, message=FALSE}
+# creating server to run the app
+server <- function(input, output) {
+  
+  # EDA plots
+  output$eda_plot <- renderPlot({
+    if (input$eda_var %in% c("HighBP", "HighChol", "AnyHealthcare", "NoDocbcCost")) {
+      # For categorical variables
+      ggplot(eda_data, aes_string(x = input$eda_var, fill = "factor(Diabetes_binary)")) +
+        geom_bar(position = "fill") +
+        scale_fill_manual(
+          values = c("0" = "red", "1" = "blue"),
+          name = "Diabetes Status",
+          labels = c("No Diabetes", "Yes Diabetes")
+        ) +
+        labs(
+          x = input$eda_var,
+          y = "Proportion",
+          fill = "Diabetes Status",
+          title = paste("Proportion of", input$eda_var, "by Diabetes Status")
+        ) +
+        theme_minimal()
+    } else {
+      # For continuous or numeric variables like Income or Age
+      ggplot(eda_data, aes_string(x = input$eda_var, fill = "factor(Diabetes_binary)")) +
+        geom_histogram(
+          position = "dodge", 
+          binwidth = 1, 
+          color = "black"
+        ) +
+        scale_fill_manual(
+          values = c("0" = "red", "1" = "blue"),
+          name = "Diabetes Status",
+          labels = c("No Diabetes", "Yes Diabetes")
+        ) +
+        labs(
+          x = input$eda_var,
+          y = "Count",
+          fill = "Diabetes Status",
+          title = paste("Distribution of", input$eda_var, "by Diabetes Status")
+        ) +
+        theme_minimal() +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+    }
+  })
+  
+  # predictions
+  observeEvent(input$predict, {
+  # preparing data for predictions
+  user_data <- data.frame(
+    AnyHealthcare = factor(input$input_healthcare, levels = levels(ml_data$AnyHealthcare)),
+    NoDocbcCost = factor(input$input_nodoc, levels = levels(ml_data$NoDocbcCost)),
+    HighBP = factor(ifelse(input$input_highbp, "Yes", "No"), levels = levels(ml_data$HighBP)),
+    HighChol = factor(ifelse(input$input_highchol, "Yes", "No"), levels = levels(ml_data$HighChol)),
+    BMI = as.numeric(input$input_bmi),
+    Age = factor(case_when(
+      input$input_age >= 18 & input$input_age <= 24 ~ "18-24",
+      input$input_age >= 25 & input$input_age <= 29 ~ "25-29",
+      input$input_age >= 30 & input$input_age <= 34 ~ "30-34",
+      input$input_age >= 35 & input$input_age <= 39 ~ "35-39",
+      input$input_age >= 40 & input$input_age <= 44 ~ "40-44",
+      input$input_age >= 45 & input$input_age <= 49 ~ "45-49",
+      input$input_age >= 50 & input$input_age <= 54 ~ "50-54",
+      input$input_age >= 55 & input$input_age <= 59 ~ "55-59",
+      input$input_age >= 60 & input$input_age <= 64 ~ "60-64",
+      input$input_age >= 65 & input$input_age <= 69 ~ "65-69",
+      input$input_age >= 70 & input$input_age <= 74 ~ "70-74",
+      input$input_age >= 75 & input$input_age <= 79 ~ "75-79",
+      input$input_age >= 80 ~ "80 or older"
+    ), levels = levels(ml_data$Age)),
+    Income = factor(input$input_income, levels = levels(ml_data$Income)),
+    Education = factor(input$input_education, levels = levels(ml_data$Education)),
+    Sex = factor(
+  ifelse(input$input_sex == "Male", "0", "1"),
+  levels = levels(ml_data$Sex)
+)
+  )
+  user_data$predicted_prob <- predict(log_model, newdata = user_data, type = "response")
+  output$pred_output <- renderText({
+    paste("Predicted Probability of Diabetes: ", round(user_data$predicted_prob * 100, 2), "%")
+  })
+})
+  
+  # Feature Importance
+  output$feature_plot <- renderPlot({
+    varImpPlot(rf_model)  # Random forest feature importance plot
+  })
+  
+  # Data Summary
+  output$data_summary <- renderPrint({
+    summary(eda_data)
+  })
+}
+
+
+```
+
+Running the app 
+
+```{r shinyapp, warning=FALSE, message=FALSE}
+shinyApp(ui = ui, server = server)
+
+```
